@@ -1,0 +1,31 @@
+﻿# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# Environments & Virtualenv
+.env
+.env.local
+.venv/
+env/
+venv/
+ENV/
+
+# Testing & Coverage
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Large Raw Dataset (Kaggle TWCS > 100MB exceeds GitHub push limit)
+data/raw/twcs.csv
+data/raw/*.csv
+data/raw/*.zip
+
+# IDEs & System Files
+.idea/
+.vscode/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db

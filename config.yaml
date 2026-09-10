@@ -1,0 +1,52 @@
+﻿brand:
+  selected: AmazonHelp
+  domain: E-Commerce Customer Support & Order Management
+
+data:
+  raw_twcs_path: data/raw/twcs.csv
+  processed_corpus_path: data/processed/amazon_conversations.csv
+  golden_set_csv: data/golden_eval_set.csv
+  golden_set_jsonl: data/golden_eval_set.jsonl
+  faiss_index_dir: data/faiss_index
+  max_training_pairs: 25000
+  golden_set_size: 200
+
+model:
+  embedding_model: all-MiniLM-L6-v2
+  embedding_dim: 384
+  openai_model: gpt-4o-mini
+  judge_model: gpt-4o-mini
+  temperature: 0.1
+
+retrieval:
+  top_k: 3
+  similarity_threshold: 0.55
+
+escalation:
+  confidence_threshold: 0.65
+  min_evidence_similarity: 0.55
+  sentiment_threat_keywords:
+    - sue
+    - lawyer
+    - attorney
+    - fraud
+    - police
+    - legal action
+    - court
+    - scam
+    - stolen
+    - fraudulent
+    - speak to a human
+    - speak to an agent
+    - talk to a human
+    - real person
+    - supervisor
+    - manager
+  sensitive_intents:
+    - ACCOUNT_ACCESS_AND_SECURITY
+    - REFUND_AND_BILLING
+    - CUSTOMER_SERVICE_COMPLAINT
+
+server:
+  host: 0.0.0.0
+  port: 8000
