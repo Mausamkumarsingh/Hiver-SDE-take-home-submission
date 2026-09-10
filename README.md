@@ -1,199 +1,648 @@
-﻿# Hiver SDE Intern Take-Home: AI Customer Support Agent
+# Hiver SDE Intern Take-Home: AI Customer Support Agent
 
-[![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue.svg)](https://www.python.org/)
-[![Tests Passing](https://img.shields.io/badge/tests-21%20passed-brightgreen.svg)](tests/)
-[![FastAPI](https://img.shields.io/badge/API-FastAPI-teal.svg)](api/)
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+> Evaluation-first AI customer support agent for Twitter/X e-commerce support, built for the Hiver SDE Intern Take-Home Assignment.
 
-> Production-quality, evaluation-first AI customer support agent for Twitter/X e-commerce operations (**AmazonHelp**), built for the **Hiver SDE Intern Take-Home Assignment**.
+## Project Overview
 
----
+This project builds an AI customer-support agent for **AmazonHelp** using the Customer Support on Twitter dataset.
 
-## 1. Quickstart: Reproduce Headline Results in < 15 Minutes
+For every incoming customer message, the system:
 
-The entire pipeline—data verification, FAISS vector indexing, baseline training, golden evaluation set benchmarking, and human-vs-LLM judge validation—can be reproduced end-to-end in **under 1 minute** on a standard CPU machine:
+1. Classifies the customer's intent.
+2. Retrieves similar historical support conversations.
+3. Generates a historically grounded response.
+4. Decides whether to automatically handle the request or escalate it to a human.
+5. Provides the reason and supporting historical evidence.
 
-```powershell
-# 1. Install dependencies
-pip install -r requirements.txt
-
-# 2. Run master end-to-end reproduction script
-python scripts/run_all.py
-```
-
-### Run Automated Test Suite (21 Unit & Integration Tests)
-```powershell
-python -m pytest -v tests/
-```
-
-### Run Interactive CLI Demo
-```powershell
-# Single query mode:
-python scripts/demo_cli.py --query "Where is my package? It was supposed to arrive yesterday."
-
-# Interactive REPL mode:
-python scripts/demo_cli.py
-```
-
-### Launch FastAPI Server
-```powershell
-python -m uvicorn api.main:app --host 0.0.0.0 --port 8000
-# Interactive Swagger docs available at: http://localhost:8000/docs
-```
+The primary design goal is **trustworthy automation**, rather than maximizing a single headline accuracy number.
 
 ---
 
-## 2. Architecture Overview
+## Quickstart
 
-```text
-Incoming Customer Message
-           │
-           ▼
-   [ Preprocessing & Normalization ]  --> Decodes HTML, strips @mentions, normalizes whitespace
-           │
-           ▼
-   [ Intent Classifier ]              --> Sentence-Transformers (all-MiniLM-L6-v2) + Linear Probe
-           │                              Outputs: Intent Name + Calibrated Confidence
-           ▼
-   [ FAISS Vector Retriever ]         --> IndexFlatIP (Exact Cosine Similarity over 10,000 resolutions)
-           │                              Outputs: Top-k Historical Resolutions + Official Links
-           ▼
-   [ Escalation Policy Engine ]       --> Evaluates Intent Risk, Sentiment/Threats, Confidence & Retrieval
-           │                              Decides: AUTO_HANDLE vs ESCALATE + Operational Reason
-           ▼
-   [ Grounded Reply Generation ]      --> Live OpenAI (gpt-4o-mini) with zero-dependency Offline Fallback
-           │
-           ▼
- Structured JSON Output
- {
-   "intent": "ORDER_TRACKING_AND_DELIVERY",
-   "confidence": 0.9897,
-   "reply": "That's strange! Kindly get in touch with us here: https://t.co/4lBU9LYvGD and we'll be glad to help.",
-   "action": "AUTO_HANDLE",
-   "reason": "High intent confidence (0.99) and grounded historical resolution available (similarity: 0.83).",
-   "evidence": [...]
- }
-```
+The complete pipeline is designed to reproduce the project's headline evaluation results in under 15 minutes after the dataset and API environment are configured.
 
----
+### Install
 
-## 3. Empirical Brand Selection Analysis
+    pip install -r requirements.txt
 
-Candidate brands from Kaggle's `thoughtvector/customer-support-on-twitter` (`twcs.csv`) were evaluated across volume, resolution substance, and deflection rate:
+### Configure Environment
 
-| Brand | Inbound Reply Pairs | English % | DM Deflection Rate | Resolution Link Rate | Domain Fit for Hiver |
-| :--- | :---: | :---: | :---: | :---: | :--- |
-| **AmazonHelp (Selected)** | **42,829** | **68.9%** | **0.6%** | **42.2%** | **High**: Orders, returns, damaged items, billing |
-| AppleSupport | 15,647 | 83.5% | 48.7% | 65.9% | Low: 49% boilerplate "Please send us a DM" |
-| Uber_Support | 10,362 | 89.0% | 34.2% | 52.5% | Medium: Narrow ride dispute focus |
-| Delta | 7,358 | 79.7% | 17.2% | 14.8% | Medium: Heavy flight delay chatter |
-| SpotifyCares | 6,414 | 82.9% | 31.7% | 48.0% | Medium: Audio streaming troubleshooting |
+Create a `.env` file using `.env.example` and add your own OpenAI API key.
 
-**AmazonHelp was selected** due to superior public resolution substance (only 0.6% DM deflections vs 48.7% for Apple), massive volume (169k+ pairs in full dataset), and direct alignment with Hiver's shared inbox customer service domain. Full report in [`reports/brand_selection.md`](reports/brand_selection.md).
+    OPENAI_API_KEY=your_openai_api_key_here
+    OPENAI_MODEL=gpt-4o-mini
+    AGENT_PORT=8000
+    LOG_LEVEL=INFO
+    CONFIDENCE_THRESHOLD=0.65
+    RETRIEVAL_SIMILARITY_THRESHOLD=0.55
+
+**Never commit `.env` or expose your API key.**
+
+### Run Complete Pipeline
+
+    python scripts/run_all.py
+
+### Run Tests
+
+    python -m pytest -v tests/
+
+### Run CLI Demo
+
+    python scripts/demo_cli.py --query "Where is my package? It was supposed to arrive yesterday."
+
+Interactive mode:
+
+    python scripts/demo_cli.py
+
+### Run FastAPI
+
+    python -m uvicorn api.main:app --host 0.0.0.0 --port 8000
+
+Swagger documentation:
+
+    http://localhost:8000/docs
 
 ---
 
-## 4. Discovered Intent Taxonomy (10 Classes)
+## Architecture
 
-1. `ORDER_TRACKING_AND_DELIVERY`: Shipping status, tracking links, delivery delays.
-2. `RETURNS_AND_EXCHANGES`: Return label generation, exchange procedures, return window.
-3. `REFUND_AND_BILLING`: Payment discrepancies, duplicate charges, refund status. *(Always Escalate)*
-4. `DAMAGED_OR_DEFECTIVE_ITEM`: Smashed, broken, defective products, opened contents. *(Always Escalate)*
-5. `CANCELLATION_REQUEST`: Order cancellation before dispatch.
-6. `ACCOUNT_ACCESS_AND_SECURITY`: 2FA lockout, password reset, compromised accounts. *(Always Escalate)*
-7. `SUBSCRIPTION_AND_PRIME`: Prime renewal charges, student discount, benefits cancellation.
-8. `DIGITAL_SERVICES_AND_DEVICES`: FireStick, Kindle, Echo/Alexa, Prime Video streaming bugs.
-9. `PRODUCT_AVAILABILITY_AND_PRICING`: Restock dates, pricing discrepancies, deal/promo codes.
-10. `CUSTOMER_SERVICE_COMPLAINT`: Rude agent grievances, delays, supervisor escalation. *(Always Escalate)*
+    Incoming Customer Message
+              |
+              v
+    +-------------------------+
+    | Preprocessing           |
+    | & Normalization         |
+    +------------+------------+
+                 |
+                 v
+    +-------------------------+
+    | Intent Classifier       |
+    | Sentence Transformers   |
+    | + Linear Probe          |
+    +------------+------------+
+                 |
+                 v
+    +-------------------------+
+    | FAISS Retriever         |
+    | Historical Resolutions  |
+    +------------+------------+
+                 |
+                 v
+    +-------------------------+
+    | Escalation Policy       |
+    | Engine                  |
+    +------------+------------+
+                 |
+                 v
+    +-------------------------+
+    | Grounded Reply          |
+    | Generation              |
+    | OpenAI / Fallback       |
+    +------------+------------+
+                 |
+                 v
+          Structured Response
 
-Detailed definitions and trigger keywords documented in [`src/intent/taxonomy.py`](src/intent/taxonomy.py).
+Example response:
 
----
-
-## 5. Benchmark Results vs. Baselines
-
-Evaluated on the **200-sample hand-audited Golden Evaluation Set** ([`data/golden_eval_set.csv`](data/golden_eval_set.csv)):
-
-| Model / System | Intent Accuracy | Intent Macro-F1 | Escalate Precision | Escalate Recall | Escalate F1 | False Auto-Handle Rate (Safety Risk) | False Escalate Rate |
-| :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
-| **Majority-Class Baseline** | 10.0% | 1.8% | 0.0% | 0.0% | 0.0% | **100.0%** | 0.0% |
-| **TF-IDF + Logistic Regression** | 77.5% | 76.8% | 85.1% | 55.9% | 67.5% | **44.1%** | 10.2% |
-| **AI SupportAgent (Ours)** | 77.0% | 77.3% | 71.0% | **91.2%** | **79.8%** | **8.8%** | 38.8% |
-
-### Why Headline Accuracy is Misleading
-* The classical TF-IDF model posted 77.5% accuracy, but had a **44.1% False Auto-Handling Rate** (it mistakenly automated 45 out of 102 critical escalations!).
-* In enterprise support (such as Hiver's shared inbox platform), **False Auto-Handling is a catastrophic operational failure**—it sends an automated canned link to an angry customer with a stolen package, compromised account, or double-billed charge.
-* Our AI SupportAgent dropped this critical safety risk to **8.8%**, capturing **91.2% of all true escalations**. Full breakdown in [`reports/failure_analysis.md`](reports/failure_analysis.md).
-
----
-
-## 6. LLM-as-a-Judge & Human Validation
-
-Automated 5D rubric evaluation across 50 responses:
-* **Correctness**: `4.50` / 5.0
-* **Groundedness**: `4.65` / 5.0
-* **Helpfulness**: `4.37` / 5.0
-* **Brand Consistency**: `4.87` / 5.0
-* **Safety**: `5.00` / 5.0
-* **Composite Overall**: `4.68` / 5.0
-
-### Human-vs-LLM Agreement Audit (30 Audited Cases)
-* **Groundedness Concordance**: **Pearson $r = 0.928$**, **Spearman $\rho = 0.963$**, **Cohen's $\kappa = 0.645$**, **$\text{MAE} = 0.083$ pts**
-* **Safety Concordance**: **100% Agreement** (Zero PII leaks observed)
-* **Subjective Helpfulness**: $r = -0.117$ (LLM judge exhibits leniency towards polite canned replies, whereas human raters penalize generic deflections).
-* **Operational Conclusion**: Our automated LLM judge is **not a standalone oracle**. It is highly reliable as an objective guardrail for Groundedness and Safety, but human-in-the-loop QA remains essential for evaluating nuanced customer helpfulness. Full report in [`reports/human_judge_agreement.md`](reports/human_judge_agreement.md).
-
----
-
-## 7. Project Structure & Portability
-
-```text
-hiver-sde-agent/
-├── api/
-│   ├── __init__.py
-│   └── main.py                     # FastAPI service (/health, /intents, /classify, /retrieve, /chat)
-├── data/
-│   ├── raw/twcs.csv                # Portable dataset location (or auto-resolved via TWCS_CSV_PATH)
-│   ├── processed/                  # Cleaned English AmazonHelp conversation pairs
-│   ├── faiss_index/                # Serialized FAISS IndexFlatIP & metadata.pkl
-│   ├── golden_eval_set.csv         # 200 hand-audited verified golden examples
-│   ├── golden_eval_set.jsonl       # Machine-readable evaluation dataset
-│   ├── annotation_template.csv     # Template marking unannotated rows as REQUIRES HUMAN ANNOTATION
-│   └── human_judge_validation.csv  # 30 audited cases for human-vs-LLM agreement
-├── reports/
-│   ├── brand_selection.md          # Empirical multi-brand analysis
-│   ├── annotation_guidelines.md    # Human annotation rubric & precedence rules
-│   ├── benchmark_summary.md        # Comparative baseline evaluation results
-│   ├── llm_judge_evaluation.md     # 5D LLM Judge audit log
-│   ├── human_judge_agreement.md    # Inter-rater agreement statistics & judge divergence analysis
-│   ├── failure_analysis.md         # Top 5 real failure modes & "What is misleading about headline number"
-│   └── take_home_report.md         # Executive 6-page comprehensive report
-├── scripts/
-│   ├── prepare_data.py             # Preprocessing & golden set builder
-│   ├── build_index.py              # FAISS vector database builder
-│   ├── run_evaluation.py           # Benchmark runner
-│   ├── run_judge.py                # LLM judge & human validation runner
-│   ├── demo_cli.py                 # Interactive Rich CLI demo
-│   └── run_all.py                  # End-to-end master reproduction script
-├── src/
-│   ├── config.py                   # Central typed Pydantic & YAML configuration (portable path resolver)
-│   ├── data/                       # Text cleaning, normalization & language filtering
-│   ├── intent/                     # Taxonomy, Majority baseline, TF-IDF baseline, MiniLM classifier
-│   ├── retrieval/                  # FAISS Indexer & Retriever with similarity thresholding
-│   ├── agent/                      # SupportAgent orchestrator, escalation engine & prompts
-│   └── evaluation/                 # Metrics, benchmark harness, LLM judge & human validator
-├── tests/                          # 21 unit & integration tests (100% passing)
-├── config.yaml                     # Central project configuration
-├── DECISION_LOG.md                 # 15 non-obvious engineering decisions & tradeoffs
-├── requirements.txt                # Pinned dependencies
-├── .env.example                    # Environment variable template
-└── README.md
-```
+    {
+      "intent": "ORDER_TRACKING_AND_DELIVERY",
+      "confidence": 0.9897,
+      "reply": "...",
+      "action": "AUTO_HANDLE",
+      "reason": "...",
+      "evidence": []
+    }
 
 ---
 
-## 8. License & Acknowledgments
-* **Dataset**: [Customer Support on Twitter](https://www.kaggle.com/datasets/thoughtvector/customer-support-on-twitter) (Kaggle).
-* **Embeddings**: Sentence-Transformers `all-MiniLM-L6-v2` (Apache 2.0).
-* **Vector Search**: FAISS (MIT).
-* Developed for the Hiver SDE Intern Take-Home Assessment.
+## Technology Stack
+
+| Component | Technology |
+|---|---|
+| Language | Python |
+| Data Processing | Pandas, NumPy |
+| ML Baselines | scikit-learn |
+| Embeddings | Sentence Transformers |
+| Vector Search | FAISS |
+| LLM | OpenAI API |
+| Structured Output | Pydantic |
+| API | FastAPI |
+| Testing | pytest |
+
+The implementation intentionally avoids unnecessary frameworks and complex infrastructure so that the system remains easy to reproduce and explain.
+
+---
+
+## Dataset
+
+Primary dataset:
+
+**Customer Support on Twitter**
+
+Kaggle:
+
+https://www.kaggle.com/datasets/thoughtvector/customer-support-on-twitter
+
+The original dataset contains approximately 3 million tweets across multiple brands.
+
+The full dataset is not committed to this repository.
+
+Place the dataset locally under:
+
+    data/raw/
+
+or configure the dataset path using the project configuration.
+
+---
+
+## Brand Selection
+
+Several brands were evaluated based on:
+
+- conversation volume
+- English-language coverage
+- resolution substance
+- DM deflection
+- actionable resolution links
+- relevance to customer-support workflows
+
+The selected brand is:
+
+### AmazonHelp
+
+| Brand | Inbound Reply Pairs | English % | DM Deflection Rate | Resolution Link Rate |
+|---|---:|---:|---:|---:|
+| **AmazonHelp** | **42,829** | **68.9%** | **0.6%** | **42.2%** |
+| AppleSupport | 15,647 | 83.5% | 48.7% | 65.9% |
+| Uber_Support | 10,362 | 89.0% | 34.2% | 52.5% |
+| Delta | 7,358 | 79.7% | 17.2% | 14.8% |
+| SpotifyCares | 6,414 | 82.9% | 31.7% | 48.0% |
+
+AmazonHelp was selected because its conversations contain substantial public resolution patterns and are closely aligned with common customer-support workflows such as orders, returns, billing, delivery, and damaged products.
+
+Detailed analysis:
+
+`reports/brand_selection.md`
+
+---
+
+## Intent Taxonomy
+
+The system uses 10 intents derived from the selected brand's support interactions.
+
+1. `ORDER_TRACKING_AND_DELIVERY` — Shipping status, tracking, and delivery delays.
+2. `RETURNS_AND_EXCHANGES` — Return labels, exchange procedures, and return-related questions.
+3. `REFUND_AND_BILLING` — Payment discrepancies, duplicate charges, and refund status.
+4. `DAMAGED_OR_DEFECTIVE_ITEM` — Broken, damaged, defective, or opened products.
+5. `CANCELLATION_REQUEST` — Requests to cancel an order.
+6. `ACCOUNT_ACCESS_AND_SECURITY` — Account access, password, 2FA, or compromised-account issues.
+7. `SUBSCRIPTION_AND_PRIME` — Prime-related charges, benefits, discounts, and cancellations.
+8. `DIGITAL_SERVICES_AND_DEVICES` — Kindle, Fire TV, Echo/Alexa, Prime Video, and related technical issues.
+9. `PRODUCT_AVAILABILITY_AND_PRICING` — Stock, pricing discrepancies, promotions, and deals.
+10. `CUSTOMER_SERVICE_COMPLAINT` — Complaints about support quality, delays, or supervisor escalation.
+
+Detailed definitions:
+
+`src/intent/taxonomy.py`
+
+---
+
+## Historical Retrieval / RAG
+
+The system uses:
+
+- `all-MiniLM-L6-v2`
+- FAISS `IndexFlatIP`
+- cosine-similarity-based retrieval
+
+Historical support resolutions are embedded and indexed.
+
+For a new customer message:
+
+    Customer Message
+           |
+           v
+       Embedding
+           |
+           v
+       FAISS Search
+           |
+           v
+    Top-k Historical Cases
+           |
+           v
+    Grounded Reply Generation
+
+Retrieved cases are used as evidence rather than simply copying previous responses.
+
+A retrieval similarity threshold is also applied to avoid using weak historical matches.
+
+---
+
+## Escalation Policy
+
+The system distinguishes between:
+
+**AUTO_HANDLE**
+
+and
+
+**ESCALATE**
+
+Escalation can be triggered by:
+
+- security-sensitive issues
+- potentially unauthorized transactions
+- damaged or high-risk cases
+- customer requests for human support
+- low intent confidence
+- insufficient retrieval evidence
+- conflicting or ambiguous requests
+
+The system returns an operational reason for the decision.
+
+The objective is to minimize unsafe automatic handling rather than maximize automation at any cost.
+
+---
+
+## Evaluation Methodology
+
+Evaluation is performed using a **200-example Golden Evaluation Set**.
+
+The evaluation set covers:
+
+- common intents
+- rare intents
+- ambiguous messages
+- short messages
+- difficult customer requests
+- escalation-sensitive cases
+
+Annotation methodology and guidelines are documented in:
+
+`reports/annotation_guidelines.md`
+
+Evaluation data:
+
+`data/golden_eval_set.csv`
+
+---
+
+## Baselines
+
+Two baselines are implemented.
+
+### Baseline 1 — Majority Class
+
+Always predicts the most frequent intent.
+
+### Baseline 2 — TF-IDF + Logistic Regression
+
+A traditional text-classification baseline:
+
+    TF-IDF
+       |
+       v
+    Logistic Regression
+
+These baselines provide reference points for evaluating whether the AI system provides meaningful improvement.
+
+---
+
+## Benchmark Results
+
+Evaluation results on the Golden Evaluation Set:
+
+| Model / System | Intent Accuracy | Intent Macro-F1 | Escalate Precision | Escalate Recall | Escalate F1 | False Auto-Handle Rate | False Escalate Rate |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| Majority-Class Baseline | 10.0% | 1.8% | 0.0% | 0.0% | 0.0% | 100.0% | 0.0% |
+| TF-IDF + Logistic Regression | 77.5% | 76.8% | 85.1% | 55.9% | 67.5% | 44.1% | 10.2% |
+| **AI SupportAgent** | **77.0%** | **77.3%** | **71.0%** | **91.2%** | **79.8%** | **8.8%** | 38.8% |
+
+---
+
+## What Is Misleading About the Headline Number?
+
+Intent accuracy alone does not adequately describe the quality of a support agent.
+
+The TF-IDF baseline achieves **77.5% Intent Accuracy**, but has a **44.1% False Auto-Handle Rate**.
+
+The AI SupportAgent achieves slightly lower intent accuracy at **77.0%**, but substantially improves escalation safety:
+
+- **91.2% Escalation Recall**
+- **8.8% False Auto-Handle Rate**
+
+For customer support, incorrectly automating a sensitive case can be more costly than unnecessarily escalating a routine case.
+
+Therefore, headline accuracy should not be interpreted as the overall quality or safety of the system.
+
+Other limitations include:
+
+- class imbalance
+- rare-intent performance
+- limited golden-set size
+- dataset noise
+- ambiguity in customer messages
+- limitations of automated judging
+
+---
+
+## LLM-as-a-Judge
+
+Generated replies are evaluated using a five-dimensional rubric:
+
+- Correctness
+- Groundedness
+- Helpfulness
+- Brand Consistency
+- Safety
+
+Current automated judge results:
+
+| Dimension | Score |
+|---|---:|
+| Correctness | 4.50 / 5 |
+| Groundedness | 4.65 / 5 |
+| Helpfulness | 4.37 / 5 |
+| Brand Consistency | 4.87 / 5 |
+| Safety | 5.00 / 5 |
+| Composite | 4.68 / 5 |
+
+These scores are treated as evaluation signals rather than ground truth.
+
+---
+
+## Human vs LLM Judge Validation
+
+A subset of responses was independently reviewed to evaluate agreement between human assessment and the LLM judge.
+
+Results:
+
+- Groundedness Pearson correlation: **0.928**
+- Groundedness Spearman correlation: **0.963**
+- Groundedness Cohen's kappa: **0.645**
+- Groundedness MAE: **0.083**
+- Safety agreement: **100%**
+- Subjective helpfulness correlation: **-0.117**
+
+The results suggest that the LLM judge is more reliable for objective properties such as groundedness and safety than for subjective helpfulness.
+
+Therefore:
+
+> **The LLM judge is treated as a supplementary evaluation tool, not as an authoritative replacement for human QA.**
+
+Detailed analysis:
+
+`reports/human_judge_agreement.md`
+
+---
+
+## Failure Analysis
+
+The project includes detailed failure analysis covering:
+
+- ambiguous customer messages
+- short or context-dependent messages
+- multi-intent requests
+- weak historical retrieval
+- incorrect escalation
+- unsupported or overly generic responses
+
+For each failure mode, the report documents:
+
+1. Example
+2. Expected behavior
+3. Actual behavior
+4. Hypothesis for failure
+5. Potential improvement
+
+See:
+
+`reports/failure_analysis.md`
+
+---
+
+## Project Structure
+
+    hiver-sde-agent/
+    |
+    ├── api/
+    |   └── main.py
+    |
+    ├── data/
+    |   ├── raw/
+    |   ├── processed/
+    |   ├── faiss_index/
+    |   ├── golden_eval_set.csv
+    |   ├── golden_eval_set.jsonl
+    |   ├── annotation_template.csv
+    |   └── human_judge_validation.csv
+    |
+    ├── reports/
+    |   ├── brand_selection.md
+    |   ├── annotation_guidelines.md
+    |   ├── benchmark_summary.md
+    |   ├── llm_judge_evaluation.md
+    |   ├── human_judge_agreement.md
+    |   ├── failure_analysis.md
+    |   └── take_home_report.md
+    |
+    ├── scripts/
+    |   ├── prepare_data.py
+    |   ├── build_index.py
+    |   ├── run_evaluation.py
+    |   ├── run_judge.py
+    |   ├── demo_cli.py
+    |   └── run_all.py
+    |
+    ├── src/
+    |   ├── data/
+    |   ├── intent/
+    |   ├── retrieval/
+    |   ├── agent/
+    |   └── evaluation/
+    |
+    ├── tests/
+    |
+    ├── config.yaml
+    ├── DECISION_LOG.md
+    ├── requirements.txt
+    ├── .env.example
+    └── README.md
+
+---
+
+## Testing
+
+The project includes unit and integration tests covering:
+
+- preprocessing
+- intent classification
+- retrieval
+- escalation logic
+- response validation
+- configuration
+- API behavior
+
+Run:
+
+    python -m pytest -v tests/
+
+Current test suite:
+
+**21 tests passing**
+
+---
+
+## API
+
+Start the FastAPI service:
+
+    python -m uvicorn api.main:app --host 0.0.0.0 --port 8000
+
+Swagger:
+
+`http://localhost:8000/docs`
+
+The API returns structured agent outputs containing:
+
+- intent
+- confidence
+- response
+- action
+- escalation reason
+- historical evidence
+
+---
+
+## CLI Demo
+
+Run:
+
+    python scripts/demo_cli.py
+
+Example input:
+
+    Where is my package? It was supposed to arrive yesterday.
+
+The system returns:
+
+    Intent
+    Confidence
+    Suggested Reply
+    AUTO_HANDLE / ESCALATE
+    Reason
+    Historical Evidence
+
+---
+
+## Reproducibility
+
+The project uses configurable parameters for:
+
+- LLM model
+- embedding model
+- retrieval top-k
+- intent confidence threshold
+- retrieval similarity threshold
+- dataset path
+- evaluation size
+
+Configuration is available through:
+
+`config.yaml`
+
+and:
+
+`.env`
+
+No API keys are included in the repository.
+
+---
+
+## Decision Log
+
+The project contains a 15-item decision log documenting important engineering choices and trade-offs.
+
+See:
+
+`DECISION_LOG.md`
+
+Topics include:
+
+- brand selection
+- intent taxonomy
+- evaluation sampling
+- retrieval architecture
+- embedding model
+- escalation policy
+- confidence thresholds
+- LLM judge
+- leakage prevention
+- failure handling
+
+---
+
+## What I Would Do With One More Week
+
+With one additional week, I would prioritize:
+
+1. Increase the size and diversity of the human-labelled evaluation set.
+2. Improve multi-intent classification.
+3. Calibrate intent and retrieval confidence thresholds.
+4. Improve retrieval using conversation-level context.
+5. Add more rigorous human evaluation of reply helpfulness.
+6. Investigate false escalations to increase safe automation without increasing false auto-handling.
+7. Evaluate additional embedding models.
+8. Add automated regression tests for previously observed failure cases.
+
+---
+
+## Limitations
+
+This is an offline research/prototype system and does not perform real customer account actions.
+
+It does not:
+
+- access private customer accounts
+- process real refunds
+- modify orders
+- communicate directly with Twitter/X
+- guarantee real-world resolution
+- replace human support agents
+
+The historical Twitter dataset is noisy and may contain incomplete conversations or outdated support practices.
+
+Retrieved historical conversations should therefore be treated as evidence rather than authoritative policy.
+
+---
+
+## Acknowledgements
+
+### Dataset
+
+Customer Support on Twitter:
+
+https://www.kaggle.com/datasets/thoughtvector/customer-support-on-twitter
+
+### Embeddings
+
+Sentence Transformers:
+
+`all-MiniLM-L6-v2`
+
+### Vector Search
+
+FAISS
+
+### LLM
+
+OpenAI API
+
+---
+
+## License
+
+MIT
