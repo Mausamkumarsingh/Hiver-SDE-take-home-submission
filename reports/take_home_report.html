@@ -1,0 +1,159 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Hiver SDE Intern Take-Home Report</title>
+<style>
+  body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; line-height: 1.6; max-width: 900px; margin: 40px auto; padding: 0 20px; color: #24292e; }
+  h1, h2, h3 { color: #0366d6; border-bottom: 1px solid #eaecef; padding-bottom: 0.3em; }
+  table { border-collapse: collapse; width: 100%; margin: 20px 0; }
+  th, td { border: 1px solid #dfe2e5; padding: 10px 14px; text-align: left; }
+  th { background-color: #f6f8fa; font-weight: 600; }
+  tr:nth-child(2n) { background-color: #fafbfc; }
+  code { background-color: #f6f8fa; padding: 0.2em 0.4em; border-radius: 3px; font-family: SFMono-Regular, Consolas, "Liberation Mono", Menlo, monospace; font-size: 85%; }
+  pre code { background-color: transparent; padding: 0; }
+  pre { background-color: #f6f8fa; padding: 16px; border-radius: 6px; overflow: auto; }
+  blockquote { border-left: 4px solid #0366d6; margin: 0; padding-left: 16px; color: #586069; background: #f1f8ff; padding: 8px 16px; border-radius: 0 4px 4px 0; }
+</style>
+</head>
+<body>
+<p>﻿# Comprehensive Technical Report: AI Customer Support Agent
+<strong>Candidate Role</strong>: Hiver SDE Intern Take-Home Assignment<br />
+<strong>Target Brand</strong>: AmazonHelp (<code>thoughtvector/customer-support-on-twitter</code>)<br />
+<strong>Evaluation Set</strong>: 200 Hand-Verified Stratified Examples</p>
+<hr />
+<h2>1. Problem Framing &amp; Scope</h2>
+<h3>1.1 What &quot;Good&quot; Means for AmazonHelp</h3>
+<p>For an enterprise customer support platform powering high-velocity shared inboxes (like Hiver), &quot;good&quot; cannot simply mean generating a superficially polite bot response or maximizing raw classification accuracy. &quot;Good&quot; is defined by four operational pillars:</p>
+<ol>
+<li><strong>Safety First (Zero Dangerous Auto-Handling)</strong>: The agent must never auto-handle queries involving account takeover, fraudulent charges, or lost/stolen merchandise with generic FAQs. Misclassifying an escalation request causes customer churn, brand liability, and regulatory risk.</li>
+<li><strong>Strict Grounding (Zero Hallucination)</strong>: Any factual claim, return window, troubleshooting step, or URL presented to the customer must be strictly anchored in verified historical resolutions.</li>
+<li><strong>Actionable Resolution Speed</strong>: For safe, high-confidence queries (e.g. general return procedures, tracking status links, Prime benefits), the system must provide instant, self-service resolution without human intervention.</li>
+<li><strong>Deterministic Auditing</strong>: Every routing decision (<code>AUTO_HANDLE</code> vs. <code>ESCALATE</code>) must produce a transparent, machine-verifiable operational reason.</li>
+</ol>
+<h3>1.2 What We Chose NOT to Build (Deliberate Non-Goals)</h3>
+<p>To maintain an interview-friendly, production-grade architecture without unnecessary complexity:</p>
+<ul>
+<li><strong>No Multi-Agent Frameworks or Graph Loops (LangGraph/CrewAI)</strong>: We explicitly avoided complex multi-agent frameworks. Multi-agent loops introduce non-deterministic latency, high token consumption, and debugging opacity that cannot survive SLA requirements. A clean, modular pipeline is faster, cheaper, and more reliable.</li>
+<li><strong>No Dynamic Tool Execution / Write Actions</strong>: The agent does not execute active account mutations (e.g., cancelling an order in the database or issuing a bank refund). In production customer service, write actions require strict authenticated agent permissions and dual approval.</li>
+<li><strong>No External Vector Database Microservices (Pinecone/Milvus/Qdrant)</strong>: For a 10,000-resolution corpus, FAISS <code>IndexFlatIP</code> running embedded in-process delivers exact cosine similarity search in $&lt; 1$ millisecond with zero external infrastructure overhead.</li>
+</ul>
+<hr />
+<h2>2. Empirical Brand Selection Analysis</h2>
+<p>From the 3-million-tweet Kaggle dataset (<code>twcs.csv</code>), we empirically benchmarked the top 5 candidate brands:</p>
+<p>| Brand | Inbound Reply Pairs | English Pairs | English % | DM Deflection Rate | Resolution Link Rate | Avg Customer Length | Avg Brand Length |
+| :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
+| <strong>AmazonHelp (Selected)</strong> | <strong>42,829</strong> | <strong>29,413</strong> | <strong>68.9%</strong> | <strong>0.6%</strong> | <strong>42.2%</strong> | <strong>131.8 chars</strong> | <strong>129.1 chars</strong> |
+| AppleSupport | 15,647 | 13,057 | 83.5% | 48.7% | 65.9% | 124.1 chars | 137.5 chars |
+| Uber_Support | 10,362 | 9,219 | 89.0% | 34.2% | 52.5% | 130.8 chars | 110.2 chars |
+| Delta | 7,358 | 5,856 | 79.7% | 17.2% | 14.8% | 119.2 chars | 108.1 chars |
+| SpotifyCares | 6,414 | 5,309 | 82.9% | 31.7% | 48.0% | 119.2 chars | 132.9 chars |</p>
+<h3>Why AmazonHelp Won</h3>
+<ul>
+<li><strong>Substantive Resolutions vs. &quot;DM Deflection&quot;</strong>: While AppleSupport has high volume, <strong>48.7% of its replies simply tell the user to &quot;send a DM with your iOS version&quot;</strong>, offering zero public resolution value. AmazonHelp has a <strong>0.6% DM rate</strong> and a <strong>42.2% actionable link rate</strong>.</li>
+<li><strong>Direct Domain Match for Hiver</strong>: AmazonHelp represents e-commerce orders, delivery delays, returns, damaged items, subscriptions, and payment disputes—the exact customer support workflows managed in Hiver shared inboxes.</li>
+</ul>
+<hr />
+<h2>3. Discovered Intent Taxonomy &amp; Golden Evaluation Set</h2>
+<p>We identified 10 mutually exclusive, collectively exhaustive (MECE) intents directly from AmazonHelp customer interactions:</p>
+<pre><code class="language-text">1. ORDER_TRACKING_AND_DELIVERY      6. ACCOUNT_ACCESS_AND_SECURITY
+2. RETURNS_AND_EXCHANGES            7. SUBSCRIPTION_AND_PRIME
+3. REFUND_AND_BILLING               8. DIGITAL_SERVICES_AND_DEVICES
+4. DAMAGED_OR_DEFECTIVE_ITEM        9. PRODUCT_AVAILABILITY_AND_PRICING
+5. CANCELLATION_REQUEST            10. CUSTOMER_SERVICE_COMPLAINT
+</code></pre>
+<h3>Golden Evaluation Set Construction &amp; Audit Process</h3>
+<ul>
+<li><strong>Dataset Scale</strong>: Exactly <strong>200 stratified real customer messages</strong> sampled from TWCS (<code>data/golden_eval_set.csv</code>).</li>
+<li><strong>Manual Verification by Author</strong>: Every single example was individually audited to eliminate cross-intent leakage and verify the ground-truth action (<code>AUTO_HANDLE</code> vs. <code>ESCALATE</code>).</li>
+<li><strong>Operational Balance</strong>: 98 examples are ground-truth <code>AUTO_HANDLE</code> (49%) and 102 are <code>ESCALATE</code> (51%).</li>
+<li><strong>Honest Attribution</strong>: All 200 items were curated and verified by the author according to strict operational criteria documented in <a href="annotation_guidelines.md"><code>reports/annotation_guidelines.md</code></a>.</li>
+</ul>
+<hr />
+<h2>4. Benchmark Results vs. Baselines</h2>
+<p>We evaluated three complete systems on the 200-sample golden evaluation set:</p>
+<ol>
+<li><strong>Majority-Class Baseline</strong>: Predicts the most frequent class and default action (<code>AUTO_HANDLE</code>).</li>
+<li><strong>TF-IDF + Logistic Regression Baseline</strong>: Classical NLP benchmark with sublinear TF-IDF (unigrams + bigrams, 5000 features) and balanced multinomial logistic regression.</li>
+<li><strong>AI SupportAgent (Our System)</strong>: Dense sentence embeddings (<code>all-MiniLM-L6-v2</code>) + regularized linear probe + FAISS <code>IndexFlatIP</code> retrieval + multi-factor escalation policy.</li>
+</ol>
+<h3>Headline Benchmark Comparison</h3>
+<p>| Model / System | Intent Accuracy | Intent Macro-F1 | Escalate Precision | Escalate Recall | Escalate F1 | False Auto-Handle Rate (Safety Risk) | False Escalate Rate |
+| :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
+| <strong>Majority-Class Baseline</strong> | 10.0% | 1.8% | 0.0% | 0.0% | 0.0% | <strong>100.0%</strong> | 0.0% |
+| <strong>TF-IDF + Logistic Regression</strong> | 77.5% | 76.8% | 85.1% | 55.9% | 67.5% | <strong>44.1%</strong> | 10.2% |
+| <strong>AI SupportAgent (Ours)</strong> | 77.0% | 77.3% | 71.0% | <strong>91.2%</strong> | <strong>79.8%</strong> | <strong>8.8%</strong> | 38.8% |</p>
+<h3>Key Takeaway: The False Auto-Handling Revelation</h3>
+<p>While the classical TF-IDF model posted a comparable 77.5% intent accuracy, it exhibited a catastrophic <strong>44.1% False Auto-Handling Rate</strong>—meaning it failed to escalate 45 out of 102 urgent customer complaints!
+Our AI SupportAgent slashed this safety hazard down to <strong>8.8%</strong>, capturing <strong>91.2% of all true escalations</strong> (93 out of 102).</p>
+<hr />
+<h2>5. Failure Analysis: Top 5 Real Failure Modes</h2>
+<p>All failure cases below are extracted directly from our empirical prediction logs (<code>reports/golden_evaluation_predictions.csv</code>):</p>
+<h3>1. Compound Inquiries &amp; Delivery-Refund Cannibalization</h3>
+<ul>
+<li><strong>Customer Inquiry</strong>: <em>&quot;delivery I paid for today, didn’t arrive. why not? i paid enough for it. where is it?? I’m unhappy. refund the delivery charge&quot;</em> (<code>eval_ref_001</code>)</li>
+<li><strong>True</strong>: <code>REFUND_AND_BILLING</code> / <code>ESCALATE</code> | <strong>Predicted</strong>: <code>ORDER_TRACKING_AND_DELIVERY</code> / <code>AUTO_HANDLE</code></li>
+<li><strong>Root Cause</strong>: The message contains both a delivery delay and a refund demand. The classifier prioritized the tracking tokens, generating an automated tracking link rather than escalating for a shipping refund.</li>
+</ul>
+<h3>2. Sarcastic Churn Threats Cannibalized by Subscription Intent</h3>
+<ul>
+<li><strong>Customer Inquiry</strong>: <em>&quot;Saying I preordered to early, terrible customer service. Won’t renew prime if this isn’t fixed.&quot;</em> (<code>eval_cus_001</code>)</li>
+<li><strong>True</strong>: <code>CUSTOMER_SERVICE_COMPLAINT</code> / <code>ESCALATE</code> | <strong>Predicted</strong>: <code>SUBSCRIPTION_AND_PRIME</code> / <code>AUTO_HANDLE</code></li>
+<li><strong>Root Cause</strong>: The customer threatened churn (<em>&quot;Won't renew prime&quot;</em>). The retriever matched standard Prime renewal management, misrouting an angry customer to self-service.</li>
+</ul>
+<h3>3. Procedural Inquiries Overriding Physical Damage</h3>
+<ul>
+<li><strong>Customer Inquiry</strong>: <em>&quot;Hi, I’ve purchased something via your app and it’s broken! How can I get it replaced?&quot;</em> (<code>eval_dam_002</code>)</li>
+<li><strong>True</strong>: <code>DAMAGED_OR_DEFECTIVE_ITEM</code> / <code>ESCALATE</code> | <strong>Predicted</strong>: <code>DAMAGED_OR_DEFECTIVE_ITEM</code> / <code>AUTO_HANDLE</code></li>
+<li><strong>Root Cause</strong>: Phrased as a procedural question (<em>&quot;How can I get it replaced?&quot;</em>), the query matched an automated Returns FAQ, failing to enforce human inspection required for broken items.</li>
+</ul>
+<h3>4. Colloquial Abbreviations &amp; Polysemy (&quot;OTP&quot;)</h3>
+<ul>
+<li><strong>Customer Inquiry</strong>: <em>&quot;Spent tday otp w . I heart them as a customer but seller support is hair pullingly difficult&quot;</em> (<code>eval_acc_002</code>)</li>
+<li><strong>True</strong>: <code>CUSTOMER_SERVICE_COMPLAINT</code> | <strong>Predicted</strong>: <code>PRODUCT_AVAILABILITY_AND_PRICING</code> (conf: 0.31)</li>
+<li><strong>Root Cause</strong>: The customer used Twitter slang <em>&quot;otp&quot;</em> (<em>&quot;on the phone&quot;</em>), which collided with <em>One-Time Password</em>. Low confidence (0.31) safely triggered escalation.</li>
+</ul>
+<h3>5. Rhetorical Hyperbole &amp; Sarcasm</h3>
+<ul>
+<li><strong>Customer Inquiry</strong>: <em>&quot;- It is really poor service or has your online chat support been hacked ?&quot;</em> (<code>eval_acc_001</code>)</li>
+<li><strong>True</strong>: <code>CUSTOMER_SERVICE_COMPLAINT</code> | <strong>Predicted</strong>: <code>ACCOUNT_ACCESS_AND_SECURITY</code> (conf: 0.31)</li>
+<li><strong>Root Cause</strong>: The customer used hyperbole (<em>&quot;has your support been hacked?&quot;</em>) to insult service quality. Low confidence (0.31) safely forced escalation.</li>
+</ul>
+<hr />
+<h2>6. “What is Misleading About My Headline Number?”</h2>
+<ol>
+<li><strong>Accuracy Masks Catastrophic Safety Failures</strong>:
+TF-IDF (77.5%) and our AI Agent (77.0%) have nearly identical accuracy. But TF-IDF missed 44.1% of escalations, whereas our agent achieved 91.2% escalation recall. Headline accuracy completely obscures this crucial operational safety difference.</li>
+<li><strong>Stratified Balance vs. Real Traffic Skew</strong>:
+Our 200-sample test set is balanced (20 samples per intent). In live Twitter traffic, delivery and returns account for &gt;65% of volume, while Account Security accounts for &lt;3%. A naive model optimized for overall accuracy on skewed traffic would achieve high headline numbers while failing on rare security events.</li>
+<li><strong>Sample Size Uncertainty ($N = 200$)</strong>:
+With 20 samples per intent, a single misclassification shifts intent recall by 5.0%. The 95% Wilson Score confidence interval for our 77.0% accuracy is $[70.8%, 82.2%]$.</li>
+<li><strong>Automated Judge Leniency</strong>:
+The automated LLM judge awarded an overall composite score of <strong>4.68 / 5.0</strong>. Hand auditing revealed that the LLM judge suffers from politeness bias, rating generic deflections as 4.5 even when a human rater scored them 3.0.</li>
+</ol>
+<hr />
+<h2>7. LLM-as-a-Judge &amp; Human Validation Findings</h2>
+<p>We audited replies across 5 rubric dimensions on a 1.0–5.0 scale on 30 hand-audited cases:</p>
+<p>| Evaluation Dimension | Human Mean | LLM Mean | Pearson $r$ | Spearman $\rho$ | Cohen's $\kappa$ | MAE | Disagreement Rate ($|\Delta| \ge 1.0$) | Status |
+| :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :--- |
+| <strong>Groundedness</strong> | <code>4.57</code> | <code>4.65</code> | <strong>0.928</strong> | <strong>0.963</strong> | <strong>0.645</strong> | <strong>0.083</strong> | <strong>0.0%</strong> | <strong>Strong Concordance</strong> |
+| <strong>Safety</strong> | <code>5.00</code> | <code>5.00</code> | 1.000* | 1.000* | 1.000* | <strong>0.000</strong> | <strong>0.0%</strong> | <strong>Perfect Agreement</strong> |
+| <strong>Brand Consistency</strong> | <code>4.50</code> | <code>4.87</code> | N/A* | N/A* | 1.000* | <strong>0.373</strong> | <strong>0.0%</strong> | <strong>Near Concordance</strong> |
+| <strong>Correctness</strong> | <code>4.17</code> | <code>4.50</code> | N/A* | N/A* | 0.000 | <strong>1.000</strong> | <strong>33.3%</strong> | <strong>LLM Leniency Gap</strong> |
+| <strong>Helpfulness</strong> | <code>3.65</code> | <code>4.37</code> | <strong>-0.117</strong> | <strong>0.060</strong> | <strong>0.316</strong> | <strong>0.717</strong> | <strong>33.3%</strong> | <strong>Weak Subjective Correlation</strong> |
+| <strong>Composite Overall</strong> | <code>4.38</code> | <code>4.68</code> | <strong>-0.033</strong> | <strong>0.140</strong> | <strong>-0.263</strong> | <strong>0.336</strong> | <strong>3.3%</strong> | <strong>Supplementary Only</strong> |</p>
+<p><em>(Note: <code>*</code> indicates zero-variance constant concordance where both raters assigned identical passing scores).</em></p>
+<blockquote>
+<p><strong>Crucial Insight</strong>: Our automated LLM judge is <strong>not reliable enough to serve as a standalone universal quality metric</strong>. Agreement is strong for Groundedness ($r = 0.928$) and Safety (100%), but weak for subjective Helpfulness. We treat automated LLM-judge metrics strictly as supplementary regression guardrails.</p>
+</blockquote>
+<hr />
+<h2>8. What We’d Do Next With One More Week</h2>
+<ol>
+<li><strong>Hierarchical Multi-Label Goal Parser</strong>: Decouple active problem statements (e.g. refund request) from secondary contextual entities (e.g. delayed package).</li>
+<li><strong>Contextual Thread Modeling</strong>: Incorporate multi-turn conversation context to track customer sentiment across sequential replies.</li>
+<li><strong>Active Learning Queue Expansion</strong>: Use uncertainty sampling on production traffic to scale the verified golden evaluation set from 200 to 1,000 examples.</li>
+<li><strong>Hiver Shared Inbox Webhook Receiver</strong>: Deploy an event-driven webhook that directly tags incoming customer emails with <code>#auto-handled</code> or <code>#escalate-human</code>.</li>
+</ol>
+
+</body>
+</html>
